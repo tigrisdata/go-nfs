@@ -5,6 +5,7 @@ import (
 	"context"
 	"path"
 
+	billy "github.com/go-git/go-billy/v5"
 	"github.com/willscott/go-nfs-client/nfs/xdr"
 )
 
@@ -51,6 +52,12 @@ func onReadDirPlus(ctx context.Context, w *response, userHandle Handler) error {
 		return &NFSStatusError{NFSStatusStale, err}
 	}
 
+	// If handler supports streaming, use the streaming path.
+	if streamer, ok := userHandle.(ReadDirStreamer); ok {
+		return onReadDirPlusStreaming(ctx, w, userHandle, streamer, fs, p, obj)
+	}
+
+	// Original path: load all entries via billy.ReadDir.
 	contents, verifier, err := getDirListingWithVerifier(userHandle, obj.Handle, obj.CookieVerif)
 	if err != nil {
 		return err
@@ -145,6 +152,129 @@ func onReadDirPlus(ctx context.Context, w *response, userHandle Handler) error {
 		return &NFSStatusError{NFSStatusServerFault, err}
 	}
 	// TODO: track writer size at this point to validate maxcount estimation and stop early if needed.
+
+	if err := w.Write(writer.Bytes()); err != nil {
+		return &NFSStatusError{NFSStatusServerFault, err}
+	}
+	return nil
+}
+
+// onReadDirPlusStreaming handles READDIRPLUS using the ReadDirStreamer interface.
+// Memory usage is bounded by the page size rather than directory size.
+func onReadDirPlusStreaming(
+	ctx context.Context,
+	w *response,
+	userHandle Handler,
+	streamer ReadDirStreamer,
+	fs billy.Filesystem,
+	p []string,
+	obj readDirPlusArgs,
+) error {
+	// Estimate how many entries to request based on MaxCount.
+	// READDIRPLUS entries are larger (~200 bytes) due to attributes and handles.
+	count := int(obj.MaxCount / 200)
+	if count < 10 {
+		count = 10
+	}
+	maxEntities := userHandle.HandleLimit() / 2
+	if maxEntities > 0 && count > maxEntities {
+		count = maxEntities
+	}
+
+	entries, verifier, nextCookie, err := streamer.ReadDirStream(fs, p, obj.Cookie, count)
+	if err != nil {
+		if nfsErr, ok := err.(*NFSStatusError); ok {
+			return nfsErr
+		}
+		return &NFSStatusError{NFSStatusIO, err}
+	}
+
+	entities := make([]readDirPlusEntity, 0, len(entries)+2)
+
+	// On first request (cookie=0), prepend "." and ".." entries.
+	if obj.Cookie == 0 {
+		dotdotFileID := uint64(0)
+		if len(p) > 0 {
+			dda := tryStat(fs, p[0:len(p)-1])
+			if dda != nil {
+				dotdotFileID = dda.Fileid
+			}
+		}
+		dotFileID := uint64(0)
+		da := tryStat(fs, p)
+		if da != nil {
+			dotFileID = da.Fileid
+		}
+		entities = append(entities,
+			readDirPlusEntity{Name: []byte("."), Cookie: 0, Next: true, FileID: dotFileID, Attributes: da},
+			readDirPlusEntity{Name: []byte(".."), Cookie: 1, Next: true, FileID: dotdotFileID},
+		)
+	}
+
+	eof := nextCookie == 0
+
+	for i, entry := range entries {
+		// Build file handle — use joinPath to avoid slice aliasing (issue #32).
+		filePath := joinPath(p, entry.Name())
+		handle := userHandle.ToHandle(fs, filePath)
+		attrs := ToFileAttribute(entry, path.Join(filePath...))
+
+		// Cookie assignment: the last entry's cookie is used by the client to
+		// resume listing. Interior entry cookies are not used for resumption.
+		cookie := nextCookie
+		if i < len(entries)-1 {
+			cookie = nextCookie - uint64(len(entries)-1-i)
+			if !eof && cookie == 0 {
+				cookie = nextCookie
+			}
+		}
+		if eof {
+			cookie = uint64(i + 2)
+		}
+
+		entities = append(entities, readDirPlusEntity{
+			FileID:     attrs.Fileid,
+			Name:       []byte(entry.Name()),
+			Cookie:     cookie,
+			Attributes: attrs,
+			Handle:     &handle,
+			Next:       true,
+		})
+	}
+
+	writer := bytes.NewBuffer([]byte{})
+	if err := xdr.Write(writer, uint32(NFSStatusOk)); err != nil {
+		return &NFSStatusError{NFSStatusServerFault, err}
+	}
+	if err := WritePostOpAttrs(writer, tryStat(fs, p)); err != nil {
+		return &NFSStatusError{NFSStatusServerFault, err}
+	}
+
+	// If the handler returned verifier=0, compute one from directory mtime.
+	if verifier == 0 {
+		dirInfo, sErr := fs.Stat(fs.Join(p...))
+		if sErr == nil {
+			verifier = hashPathAndMtime(fs.Join(p...), dirInfo.ModTime().UnixNano())
+		}
+	}
+	if err := xdr.Write(writer, verifier); err != nil {
+		return &NFSStatusError{NFSStatusServerFault, err}
+	}
+
+	if err := xdr.Write(writer, len(entities) > 0); err != nil {
+		return &NFSStatusError{NFSStatusServerFault, err}
+	}
+	if len(entities) > 0 {
+		entities[len(entities)-1].Next = false
+		for _, e := range entities {
+			if err := xdr.Write(writer, e); err != nil {
+				return &NFSStatusError{NFSStatusServerFault, err}
+			}
+		}
+	}
+	if err := xdr.Write(writer, eof); err != nil {
+		return &NFSStatusError{NFSStatusServerFault, err}
+	}
 
 	if err := w.Write(writer.Bytes()); err != nil {
 		return &NFSStatusError{NFSStatusServerFault, err}

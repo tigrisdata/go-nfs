@@ -11,6 +11,7 @@ import (
 	"path"
 	"sort"
 
+	billy "github.com/go-git/go-billy/v5"
 	"github.com/willscott/go-nfs-client/nfs/xdr"
 )
 
@@ -45,6 +46,12 @@ func onReadDir(ctx context.Context, w *response, userHandle Handler) error {
 		return &NFSStatusError{NFSStatusStale, err}
 	}
 
+	// If handler supports streaming, use the streaming path.
+	if streamer, ok := userHandle.(ReadDirStreamer); ok {
+		return onReadDirStreaming(ctx, w, userHandle, streamer, fs, p, obj)
+	}
+
+	// Original path: load all entries via billy.ReadDir.
 	contents, verifier, err := getDirListingWithVerifier(userHandle, obj.Handle, obj.CookieVerif)
 	if err != nil {
 		return err
@@ -137,6 +144,132 @@ func onReadDir(ctx context.Context, w *response, userHandle Handler) error {
 	return nil
 }
 
+// onReadDirStreaming handles READDIR using the ReadDirStreamer interface.
+// Memory usage is bounded by the page size rather than directory size.
+func onReadDirStreaming(
+	ctx context.Context,
+	w *response,
+	userHandle Handler,
+	streamer ReadDirStreamer,
+	fs billy.Filesystem,
+	p []string,
+	obj readDirArgs,
+) error {
+	// Estimate how many entries to request based on Count.
+	count := int(obj.Count / 64) // ~64 bytes per wire entry estimate
+	if count < 10 {
+		count = 10
+	}
+	maxEntities := userHandle.HandleLimit() / 2
+	if maxEntities > 0 && count > maxEntities {
+		count = maxEntities
+	}
+
+	entries, verifier, nextCookie, err := streamer.ReadDirStream(fs, p, obj.Cookie, count)
+	if err != nil {
+		if nfsErr, ok := err.(*NFSStatusError); ok {
+			return nfsErr
+		}
+		return &NFSStatusError{NFSStatusIO, err}
+	}
+
+	entities := make([]readDirEntity, 0, len(entries)+2)
+
+	// On first request (cookie=0), prepend "." and ".." entries.
+	if obj.Cookie == 0 {
+		dotdotFileID := uint64(0)
+		if len(p) > 0 {
+			dda := tryStat(fs, p[0:len(p)-1])
+			if dda != nil {
+				dotdotFileID = dda.Fileid
+			}
+		}
+		dotFileID := uint64(0)
+		da := tryStat(fs, p)
+		if da != nil {
+			dotFileID = da.Fileid
+		}
+		entities = append(entities,
+			readDirEntity{Name: []byte("."), Cookie: 0, Next: true, FileID: dotFileID},
+			readDirEntity{Name: []byte(".."), Cookie: 1, Next: true, FileID: dotdotFileID},
+		)
+	}
+
+	eof := nextCookie == 0
+
+	for i, entry := range entries {
+		attrs := ToFileAttribute(entry, path.Join(append(p, entry.Name())...))
+
+		// For the last entry in a non-EOF page, use nextCookie so the client
+		// can resume from where the handler left off.
+		cookie := nextCookie
+		if i < len(entries)-1 {
+			// Interior entries: use a synthetic cookie that won't be used for
+			// resumption. The client will only use the last entry's cookie.
+			// We use a high offset to avoid collision with the legacy path's
+			// index-based cookies.
+			cookie = nextCookie - uint64(len(entries)-1-i)
+			if !eof {
+				// Ensure interior cookies don't accidentally become 0 (EOF signal).
+				if cookie == 0 {
+					cookie = nextCookie
+				}
+			}
+		}
+		if eof {
+			// When this is the last page, use entry index as cookie.
+			// These won't be used for resumption.
+			cookie = uint64(i + 2)
+		}
+
+		entities = append(entities, readDirEntity{
+			FileID: attrs.Fileid,
+			Name:   []byte(entry.Name()),
+			Cookie: cookie,
+			Next:   true,
+		})
+	}
+
+	writer := bytes.NewBuffer([]byte{})
+	if err := xdr.Write(writer, uint32(NFSStatusOk)); err != nil {
+		return &NFSStatusError{NFSStatusServerFault, err}
+	}
+	if err := WritePostOpAttrs(writer, tryStat(fs, p)); err != nil {
+		return &NFSStatusError{NFSStatusServerFault, err}
+	}
+
+	// If the handler returned verifier=0, compute one from directory mtime.
+	if verifier == 0 {
+		dirInfo, sErr := fs.Stat(fs.Join(p...))
+		if sErr == nil {
+			verifier = hashPathAndMtime(fs.Join(p...), dirInfo.ModTime().UnixNano())
+		}
+	}
+	if err := xdr.Write(writer, verifier); err != nil {
+		return &NFSStatusError{NFSStatusServerFault, err}
+	}
+
+	if err := xdr.Write(writer, len(entities) > 0); err != nil {
+		return &NFSStatusError{NFSStatusServerFault, err}
+	}
+	if len(entities) > 0 {
+		entities[len(entities)-1].Next = false
+		for _, e := range entities {
+			if err := xdr.Write(writer, e); err != nil {
+				return &NFSStatusError{NFSStatusServerFault, err}
+			}
+		}
+	}
+	if err := xdr.Write(writer, eof); err != nil {
+		return &NFSStatusError{NFSStatusServerFault, err}
+	}
+
+	if err := w.Write(writer.Bytes()); err != nil {
+		return &NFSStatusError{NFSStatusServerFault, err}
+	}
+	return nil
+}
+
 func getDirListingWithVerifier(userHandle Handler, fsHandle []byte, verifier uint64) ([]fs.FileInfo, uint64, error) {
 	// figure out what directory it is.
 	fs, p, err := userHandle.FromHandle(fsHandle)
@@ -188,4 +321,14 @@ func hashPathAndContents(path string, contents []fs.FileInfo) uint64 {
 
 	verify := vHash.Sum(nil)[0:8]
 	return binary.BigEndian.Uint64(verify)
+}
+
+// hashPathAndMtime creates a verifier from a path and mtime.
+// Used by the streaming path when the handler returns verifier=0.
+func hashPathAndMtime(path string, mtimeNano int64) uint64 {
+	h := sha256.New()
+	h.Write([]byte(path))
+	_ = binary.Write(h, binary.BigEndian, mtimeNano)
+	sum := h.Sum(nil)
+	return binary.BigEndian.Uint64(sum[:8])
 }
