@@ -256,7 +256,8 @@ func onReadDirStreaming(
 	eof := nextCookie == 0
 
 	for i, entry := range entries {
-		attrs := ToFileAttribute(entry, path.Join(append(p, entry.Name())...))
+		filePath := joinPath(p, entry.Name())
+		attrs := ToFileAttribute(entry, path.Join(filePath...))
 
 		// Each entry must have a unique cookie per RFC 1813. The last
 		// entry on a non-EOF page gets a real resumption cookie. All
