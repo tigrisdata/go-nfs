@@ -165,6 +165,11 @@ func onReadDirStreaming(
 		count = maxEntities
 	}
 
+	// NOTE: ReadDirStream is called before cookie verifier validation because
+	// the verifier value comes from the handler's return. This means the call
+	// may consume handler state (e.g., continuation tokens) only for the
+	// result to be discarded if the verifier check fails. Implementations
+	// should tolerate this — see ReadDirStreamer docs for guidance.
 	entries, verifier, nextCookie, err := streamer.ReadDirStream(fs, p, obj.Cookie, count)
 	if err != nil {
 		if nfsErr, ok := err.(*NFSStatusError); ok {
@@ -184,7 +189,7 @@ func onReadDirStreaming(
 	// Validate cookie verifier to detect directory changes between pages.
 	// Per RFC 1813 §3.3.16, the client echoes back the verifier from the
 	// previous response. If the directory has changed, the verifier won't
-	// match and the client must restart the listing.
+	// match and the client must restart the listing from cookie=0.
 	if obj.Cookie > 0 && obj.CookieVerif > 0 && verifier != obj.CookieVerif {
 		return &NFSStatusError{NFSStatusBadCookie, nil}
 	}
@@ -216,14 +221,19 @@ func onReadDirStreaming(
 	for i, entry := range entries {
 		attrs := ToFileAttribute(entry, path.Join(append(p, entry.Name())...))
 
-		// The last entry's cookie is what the client uses to resume.
-		// Interior entries all get nextCookie — if a client tries to
-		// resume from an interior cookie the handler will return
-		// NFSStatusBadCookie and the client restarts the listing.
-		cookie := nextCookie
+		// Each entry must have a unique cookie per RFC 1813. The last
+		// entry's cookie is the resumption point for the next page.
+		// Interior entries get synthetic cookies above nextCookie that
+		// the handler won't recognize — if a client tries to resume
+		// from one, the handler returns NFSStatusBadCookie and the
+		// client restarts the listing.
+		var cookie uint64
 		if eof {
-			// Last page: cookies won't be used for resumption.
 			cookie = uint64(i + 2)
+		} else if i == len(entries)-1 {
+			cookie = nextCookie
+		} else {
+			cookie = nextCookie + uint64(len(entries)-1-i)
 		}
 
 		entities = append(entities, readDirEntity{

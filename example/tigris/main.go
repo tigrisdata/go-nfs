@@ -76,7 +76,10 @@ func (h *TigrisHandler) ReadDirStream(
 			return nil, 0, 0, &nfs.NFSStatusError{NFSStatus: nfs.NFSStatusBadCookie}
 		}
 		continuation = state.continuation
-		h.streams.Delete(cookie)
+		// Don't delete yet — go-nfs may discard our result if the cookie
+		// verifier check fails. Stale entries are cleaned up by
+		// cleanupOldStreams. Deleting here would irrecoverably lose the
+		// continuation token.
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
