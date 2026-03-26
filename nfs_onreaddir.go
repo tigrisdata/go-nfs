@@ -243,9 +243,13 @@ func onReadDirStreaming(
 		// the handler won't recognize — if a client tries to resume
 		// from one, the handler returns NFSStatusBadCookie and the
 		// client restarts the listing.
+		//
+		// EOF cookies are based on handlerCookie (the resume point that
+		// produced this page) so they are unique across the entire
+		// listing, not just within the final page.
 		var cookie uint64
 		if eof {
-			cookie = uint64(i) + streamCookieOffset
+			cookie = handlerCookie + streamCookieOffset + uint64(i) + 1
 		} else if i == len(entries)-1 {
 			cookie = nextCookie + streamCookieOffset
 		} else {

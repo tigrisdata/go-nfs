@@ -244,7 +244,7 @@ func onReadDirPlusStreaming(
 		// Cookie assignment — see onReadDirStreaming for full explanation.
 		var cookie uint64
 		if eof {
-			cookie = uint64(i) + streamCookieOffset
+			cookie = handlerCookie + streamCookieOffset + uint64(i) + 1
 		} else if i == len(entries)-1 {
 			cookie = nextCookie + streamCookieOffset
 		} else {
