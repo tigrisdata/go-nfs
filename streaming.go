@@ -60,3 +60,25 @@ type ReadDirStreamer interface {
 		count int,
 	) (entries []os.FileInfo, verifier uint64, nextCookie uint64, err error)
 }
+
+// asReadDirStreamer checks whether h (or any handler it wraps) implements
+// ReadDirStreamer. This allows wrapper handlers like helpers.CachingHandler
+// to transparently forward the streaming interface from the inner handler.
+//
+// Wrapping handlers should implement Unwrap() Handler to participate.
+func asReadDirStreamer(h Handler) (ReadDirStreamer, bool) {
+	type unwrapper interface {
+		Unwrap() Handler
+	}
+	for h != nil {
+		if s, ok := h.(ReadDirStreamer); ok {
+			return s, true
+		}
+		u, ok := h.(unwrapper)
+		if !ok {
+			return nil, false
+		}
+		h = u.Unwrap()
+	}
+	return nil, false
+}

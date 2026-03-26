@@ -53,8 +53,8 @@ func onReadDirPlus(ctx context.Context, w *response, userHandle Handler) error {
 		return &NFSStatusError{NFSStatusStale, err}
 	}
 
-	// If handler supports streaming, use the streaming path.
-	if streamer, ok := userHandle.(ReadDirStreamer); ok {
+	// If handler (or wrapped handler) supports streaming, use the streaming path.
+	if streamer, ok := asReadDirStreamer(userHandle); ok {
 		return onReadDirPlusStreaming(ctx, w, userHandle, streamer, fs, p, obj)
 	}
 
@@ -208,7 +208,7 @@ func onReadDirPlusStreaming(
 	// Validate that the handler's nextCookie won't collide with the
 	// synthetic cookie space. Handler cookies must be < 2^63 so that
 	// adding streamCookieOffset doesn't set the syntheticCookieBit.
-	if nextCookie != 0 && nextCookie+streamCookieOffset >= syntheticCookieBit {
+	if nextCookie != 0 && nextCookie >= syntheticCookieBit-streamCookieOffset {
 		return &NFSStatusError{NFSStatusServerFault, fmt.Errorf(
 			"ReadDirStream returned nextCookie %d which is too large (must be < %d)",
 			nextCookie, syntheticCookieBit-streamCookieOffset)}

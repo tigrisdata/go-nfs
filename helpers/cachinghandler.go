@@ -159,6 +159,12 @@ func (c *CachingHandler) HandleLimit() int {
 	return c.cacheLimit
 }
 
+// Unwrap returns the underlying handler. This allows go-nfs to discover
+// optional interfaces (like ReadDirStreamer) on the wrapped handler.
+func (c *CachingHandler) Unwrap() nfs.Handler {
+	return c.Handler
+}
+
 func hasPrefix(path, prefix []string) bool {
 	if len(prefix) > len(path) {
 		return false
