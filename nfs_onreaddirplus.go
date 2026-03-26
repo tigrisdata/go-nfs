@@ -181,6 +181,12 @@ func onReadDirPlusStreaming(
 		count = maxEntities
 	}
 
+	// Reject synthetic cookies — these are interior/EOF entries that
+	// are not valid resumption points. See syntheticCookieBit.
+	if obj.Cookie&syntheticCookieBit != 0 {
+		return &NFSStatusError{NFSStatusBadCookie, nil}
+	}
+
 	// Convert client cookie to handler cookie (see streamCookieOffset).
 	handlerCookie := uint64(0)
 	if obj.Cookie > 1 {
@@ -244,11 +250,11 @@ func onReadDirPlusStreaming(
 		// Cookie assignment — see onReadDirStreaming for full explanation.
 		var cookie uint64
 		if eof {
-			cookie = handlerCookie + streamCookieOffset + uint64(i) + 1
+			cookie = syntheticCookieBit | (handlerCookie + streamCookieOffset + uint64(i))
 		} else if i == len(entries)-1 {
 			cookie = nextCookie + streamCookieOffset
 		} else {
-			cookie = nextCookie + streamCookieOffset + uint64(len(entries)-1-i)
+			cookie = syntheticCookieBit | (handlerCookie + streamCookieOffset + uint64(i))
 		}
 
 		entities = append(entities, readDirPlusEntity{

@@ -150,6 +150,13 @@ func onReadDir(ctx context.Context, w *response, userHandle Handler) error {
 // returning nextCookie=1 would collide with "..".
 const streamCookieOffset = 2
 
+// syntheticCookieBit marks cookies that are NOT valid resumption points.
+// Interior entries on non-EOF pages and all entries on EOF pages get this
+// bit set. Only the last entry on a non-EOF page has a "real" cookie
+// (nextCookie + streamCookieOffset) that clients can use to resume.
+// This prevents collisions between synthetic cookies across pages.
+const syntheticCookieBit = uint64(1) << 63
+
 // onReadDirStreaming handles READDIR using the ReadDirStreamer interface.
 // Memory usage is bounded by the page size rather than directory size.
 func onReadDirStreaming(
@@ -169,6 +176,12 @@ func onReadDirStreaming(
 	maxEntities := userHandle.HandleLimit() / 2
 	if maxEntities > 0 && count > maxEntities {
 		count = maxEntities
+	}
+
+	// Reject synthetic cookies — these are interior/EOF entries that
+	// are not valid resumption points. See syntheticCookieBit.
+	if obj.Cookie&syntheticCookieBit != 0 {
+		return &NFSStatusError{NFSStatusBadCookie, nil}
 	}
 
 	// Convert client cookie to handler cookie by removing the offset
@@ -236,24 +249,21 @@ func onReadDirStreaming(
 		attrs := ToFileAttribute(entry, path.Join(append(p, entry.Name())...))
 
 		// Each entry must have a unique cookie per RFC 1813. The last
-		// entry's cookie is the resumption point for the next page.
-		// All cookies are offset by streamCookieOffset to avoid
-		// collisions with the "." and ".." synthetic entries.
-		// Interior entries get synthetic cookies above nextCookie that
-		// the handler won't recognize — if a client tries to resume
-		// from one, the handler returns NFSStatusBadCookie and the
-		// client restarts the listing.
+		// entry on a non-EOF page gets a real resumption cookie. All
+		// other entries get synthetic cookies with syntheticCookieBit
+		// set, which go-nfs rejects early if a client tries to resume
+		// from them (see the check at the top of this function).
 		//
-		// EOF cookies are based on handlerCookie (the resume point that
-		// produced this page) so they are unique across the entire
-		// listing, not just within the final page.
+		// Synthetic cookies use (streamCookieOffset + index) to ensure
+		// uniqueness within a page, plus the page's handlerCookie to
+		// ensure uniqueness across pages.
 		var cookie uint64
 		if eof {
-			cookie = handlerCookie + streamCookieOffset + uint64(i) + 1
+			cookie = syntheticCookieBit | (handlerCookie + streamCookieOffset + uint64(i))
 		} else if i == len(entries)-1 {
 			cookie = nextCookie + streamCookieOffset
 		} else {
-			cookie = nextCookie + streamCookieOffset + uint64(len(entries)-1-i)
+			cookie = syntheticCookieBit | (handlerCookie + streamCookieOffset + uint64(i))
 		}
 
 		entities = append(entities, readDirEntity{
