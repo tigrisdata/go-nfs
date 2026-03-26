@@ -173,6 +173,22 @@ func onReadDirStreaming(
 		return &NFSStatusError{NFSStatusIO, err}
 	}
 
+	// If the handler returned verifier=0, compute one from directory mtime.
+	if verifier == 0 {
+		dirInfo, sErr := fs.Stat(fs.Join(p...))
+		if sErr == nil {
+			verifier = hashPathAndMtime(fs.Join(p...), dirInfo.ModTime().UnixNano())
+		}
+	}
+
+	// Validate cookie verifier to detect directory changes between pages.
+	// Per RFC 1813 §3.3.16, the client echoes back the verifier from the
+	// previous response. If the directory has changed, the verifier won't
+	// match and the client must restart the listing.
+	if obj.Cookie > 0 && obj.CookieVerif > 0 && verifier != obj.CookieVerif {
+		return &NFSStatusError{NFSStatusBadCookie, nil}
+	}
+
 	entities := make([]readDirEntity, 0, len(entries)+2)
 
 	// On first request (cookie=0), prepend "." and ".." entries.
@@ -200,25 +216,13 @@ func onReadDirStreaming(
 	for i, entry := range entries {
 		attrs := ToFileAttribute(entry, path.Join(append(p, entry.Name())...))
 
-		// For the last entry in a non-EOF page, use nextCookie so the client
-		// can resume from where the handler left off.
+		// The last entry's cookie is what the client uses to resume.
+		// Interior entries all get nextCookie — if a client tries to
+		// resume from an interior cookie the handler will return
+		// NFSStatusBadCookie and the client restarts the listing.
 		cookie := nextCookie
-		if i < len(entries)-1 {
-			// Interior entries: use a synthetic cookie that won't be used for
-			// resumption. The client will only use the last entry's cookie.
-			// We use a high offset to avoid collision with the legacy path's
-			// index-based cookies.
-			cookie = nextCookie - uint64(len(entries)-1-i)
-			if !eof {
-				// Ensure interior cookies don't accidentally become 0 (EOF signal).
-				if cookie == 0 {
-					cookie = nextCookie
-				}
-			}
-		}
 		if eof {
-			// When this is the last page, use entry index as cookie.
-			// These won't be used for resumption.
+			// Last page: cookies won't be used for resumption.
 			cookie = uint64(i + 2)
 		}
 
@@ -238,13 +242,6 @@ func onReadDirStreaming(
 		return &NFSStatusError{NFSStatusServerFault, err}
 	}
 
-	// If the handler returned verifier=0, compute one from directory mtime.
-	if verifier == 0 {
-		dirInfo, sErr := fs.Stat(fs.Join(p...))
-		if sErr == nil {
-			verifier = hashPathAndMtime(fs.Join(p...), dirInfo.ModTime().UnixNano())
-		}
-	}
 	if err := xdr.Write(writer, verifier); err != nil {
 		return &NFSStatusError{NFSStatusServerFault, err}
 	}

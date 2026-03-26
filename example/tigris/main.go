@@ -238,5 +238,11 @@ func main() {
 }
 
 func createS3Client() *s3.Client {
-	return nil
+	// Replace with real initialization, e.g.:
+	//
+	//   cfg, _ := config.LoadDefaultConfig(context.Background())
+	//   return s3.NewFromConfig(cfg, func(o *s3.Options) {
+	//       o.BaseEndpoint = aws.String(os.Getenv("AWS_ENDPOINT_URL_S3"))
+	//   })
+	panic("createS3Client: not implemented — see comment above")
 }

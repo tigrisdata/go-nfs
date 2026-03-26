@@ -189,6 +189,19 @@ func onReadDirPlusStreaming(
 		return &NFSStatusError{NFSStatusIO, err}
 	}
 
+	// If the handler returned verifier=0, compute one from directory mtime.
+	if verifier == 0 {
+		dirInfo, sErr := fs.Stat(fs.Join(p...))
+		if sErr == nil {
+			verifier = hashPathAndMtime(fs.Join(p...), dirInfo.ModTime().UnixNano())
+		}
+	}
+
+	// Validate cookie verifier to detect directory changes between pages.
+	if obj.Cookie > 0 && obj.CookieVerif > 0 && verifier != obj.CookieVerif {
+		return &NFSStatusError{NFSStatusBadCookie, nil}
+	}
+
 	entities := make([]readDirPlusEntity, 0, len(entries)+2)
 
 	// On first request (cookie=0), prepend "." and ".." entries.
@@ -219,15 +232,11 @@ func onReadDirPlusStreaming(
 		handle := userHandle.ToHandle(fs, filePath)
 		attrs := ToFileAttribute(entry, path.Join(filePath...))
 
-		// Cookie assignment: the last entry's cookie is used by the client to
-		// resume listing. Interior entry cookies are not used for resumption.
+		// The last entry's cookie is what the client uses to resume.
+		// Interior entries all get nextCookie — if a client tries to
+		// resume from an interior cookie the handler will return
+		// NFSStatusBadCookie and the client restarts the listing.
 		cookie := nextCookie
-		if i < len(entries)-1 {
-			cookie = nextCookie - uint64(len(entries)-1-i)
-			if !eof && cookie == 0 {
-				cookie = nextCookie
-			}
-		}
 		if eof {
 			cookie = uint64(i + 2)
 		}
@@ -250,13 +259,6 @@ func onReadDirPlusStreaming(
 		return &NFSStatusError{NFSStatusServerFault, err}
 	}
 
-	// If the handler returned verifier=0, compute one from directory mtime.
-	if verifier == 0 {
-		dirInfo, sErr := fs.Stat(fs.Join(p...))
-		if sErr == nil {
-			verifier = hashPathAndMtime(fs.Join(p...), dirInfo.ModTime().UnixNano())
-		}
-	}
 	if err := xdr.Write(writer, verifier); err != nil {
 		return &NFSStatusError{NFSStatusServerFault, err}
 	}
