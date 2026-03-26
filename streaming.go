@@ -34,7 +34,8 @@ type ReadDirStreamer interface {
 	//
 	// Cookie semantics:
 	//   - Cookie 0 always means "start from beginning"
-	//   - Cookie values are opaque to go-nfs and can be any uint64
+	//   - Cookie values are opaque to go-nfs but must be less than 2^63
+	//     (bit 63 is reserved internally for synthetic NFS cookies)
 	//   - Returning nextCookie=0 signals end of directory (EOF)
 	//
 	// When cookie is 0, go-nfs will prepend "." and ".." entries automatically.

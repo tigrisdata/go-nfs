@@ -3,6 +3,7 @@ package nfs
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"path"
 
 	billy "github.com/go-git/go-billy/v5"
@@ -202,6 +203,15 @@ func onReadDirPlusStreaming(
 			return nfsErr
 		}
 		return &NFSStatusError{NFSStatusIO, err}
+	}
+
+	// Validate that the handler's nextCookie won't collide with the
+	// synthetic cookie space. Handler cookies must be < 2^63 so that
+	// adding streamCookieOffset doesn't set the syntheticCookieBit.
+	if nextCookie != 0 && nextCookie+streamCookieOffset >= syntheticCookieBit {
+		return &NFSStatusError{NFSStatusServerFault, fmt.Errorf(
+			"ReadDirStream returned nextCookie %d which is too large (must be < %d)",
+			nextCookie, syntheticCookieBit-streamCookieOffset)}
 	}
 
 	// If the handler returned verifier=0, compute one from directory mtime.

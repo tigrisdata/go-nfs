@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -203,6 +204,15 @@ func onReadDirStreaming(
 			return nfsErr
 		}
 		return &NFSStatusError{NFSStatusIO, err}
+	}
+
+	// Validate that the handler's nextCookie won't collide with the
+	// synthetic cookie space. Handler cookies must be < 2^63 so that
+	// adding streamCookieOffset doesn't set the syntheticCookieBit.
+	if nextCookie != 0 && nextCookie+streamCookieOffset >= syntheticCookieBit {
+		return &NFSStatusError{NFSStatusServerFault, fmt.Errorf(
+			"ReadDirStream returned nextCookie %d which is too large (must be < %d)",
+			nextCookie, syntheticCookieBit-streamCookieOffset)}
 	}
 
 	// If the handler returned verifier=0, compute one from directory mtime.
