@@ -181,10 +181,16 @@ func onReadDirPlusStreaming(
 		count = maxEntities
 	}
 
+	// Convert client cookie to handler cookie (see streamCookieOffset).
+	handlerCookie := uint64(0)
+	if obj.Cookie > 1 {
+		handlerCookie = obj.Cookie - streamCookieOffset
+	}
+
 	// NOTE: ReadDirStream is called before cookie verifier validation because
 	// the verifier value comes from the handler's return. See onReadDirStreaming
 	// and ReadDirStreamer docs for details on this ordering constraint.
-	entries, verifier, nextCookie, err := streamer.ReadDirStream(fs, p, obj.Cookie, count)
+	entries, verifier, nextCookie, err := streamer.ReadDirStream(fs, p, handlerCookie, count)
 	if err != nil {
 		if nfsErr, ok := err.(*NFSStatusError); ok {
 			return nfsErr
@@ -235,19 +241,14 @@ func onReadDirPlusStreaming(
 		handle := userHandle.ToHandle(fs, filePath)
 		attrs := ToFileAttribute(entry, path.Join(filePath...))
 
-		// Each entry must have a unique cookie per RFC 1813. The last
-		// entry's cookie is the resumption point for the next page.
-		// Interior entries get synthetic cookies above nextCookie that
-		// the handler won't recognize — if a client tries to resume
-		// from one, the handler returns NFSStatusBadCookie and the
-		// client restarts the listing.
+		// Cookie assignment — see onReadDirStreaming for full explanation.
 		var cookie uint64
 		if eof {
-			cookie = uint64(i + 2)
+			cookie = uint64(i) + streamCookieOffset
 		} else if i == len(entries)-1 {
-			cookie = nextCookie
+			cookie = nextCookie + streamCookieOffset
 		} else {
-			cookie = nextCookie + uint64(len(entries)-1-i)
+			cookie = nextCookie + streamCookieOffset + uint64(len(entries)-1-i)
 		}
 
 		entities = append(entities, readDirPlusEntity{

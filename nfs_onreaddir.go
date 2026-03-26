@@ -144,6 +144,12 @@ func onReadDir(ctx context.Context, w *response, userHandle Handler) error {
 	return nil
 }
 
+// streamCookieOffset is added to handler cookies on the wire to avoid
+// collisions with the hardcoded "." (cookie=0) and ".." (cookie=1) entries.
+// Handler cookies are opaque uint64 values; without this offset, a handler
+// returning nextCookie=1 would collide with "..".
+const streamCookieOffset = 2
+
 // onReadDirStreaming handles READDIR using the ReadDirStreamer interface.
 // Memory usage is bounded by the page size rather than directory size.
 func onReadDirStreaming(
@@ -165,12 +171,20 @@ func onReadDirStreaming(
 		count = maxEntities
 	}
 
+	// Convert client cookie to handler cookie by removing the offset
+	// for the synthetic "." and ".." entries that go-nfs prepends.
+	// Cookie 0 = first page, cookie 1 = ".." (resume = first real page).
+	handlerCookie := uint64(0)
+	if obj.Cookie > 1 {
+		handlerCookie = obj.Cookie - streamCookieOffset
+	}
+
 	// NOTE: ReadDirStream is called before cookie verifier validation because
 	// the verifier value comes from the handler's return. This means the call
 	// may consume handler state (e.g., continuation tokens) only for the
 	// result to be discarded if the verifier check fails. Implementations
 	// should tolerate this — see ReadDirStreamer docs for guidance.
-	entries, verifier, nextCookie, err := streamer.ReadDirStream(fs, p, obj.Cookie, count)
+	entries, verifier, nextCookie, err := streamer.ReadDirStream(fs, p, handlerCookie, count)
 	if err != nil {
 		if nfsErr, ok := err.(*NFSStatusError); ok {
 			return nfsErr
@@ -223,17 +237,19 @@ func onReadDirStreaming(
 
 		// Each entry must have a unique cookie per RFC 1813. The last
 		// entry's cookie is the resumption point for the next page.
+		// All cookies are offset by streamCookieOffset to avoid
+		// collisions with the "." and ".." synthetic entries.
 		// Interior entries get synthetic cookies above nextCookie that
 		// the handler won't recognize — if a client tries to resume
 		// from one, the handler returns NFSStatusBadCookie and the
 		// client restarts the listing.
 		var cookie uint64
 		if eof {
-			cookie = uint64(i + 2)
+			cookie = uint64(i) + streamCookieOffset
 		} else if i == len(entries)-1 {
-			cookie = nextCookie
+			cookie = nextCookie + streamCookieOffset
 		} else {
-			cookie = nextCookie + uint64(len(entries)-1-i)
+			cookie = nextCookie + streamCookieOffset + uint64(len(entries)-1-i)
 		}
 
 		entities = append(entities, readDirEntity{
