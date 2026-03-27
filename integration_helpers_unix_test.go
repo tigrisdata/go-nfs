@@ -177,7 +177,7 @@ func mountNFS(port int, mountDir string) error {
 			mountDir)
 	case "linux":
 		cmd = exec.CommandContext(ctx, "mount",
-			"-o", fmt.Sprintf("port=%d,mountport=%d,nfsvers=3,noacl,tcp,noac,soft,timeo=10,retrans=2", port, port),
+			"-o", fmt.Sprintf("port=%d,mountport=%d,nfsvers=3,noacl,tcp,noac,soft,timeo=100,retrans=5", port, port),
 			"-t", "nfs",
 			"localhost:/mount",
 			mountDir)
