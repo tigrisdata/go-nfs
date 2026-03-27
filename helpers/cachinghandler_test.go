@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/willscott/go-nfs/helpers/memfs"
+	"github.com/tigrisdata/go-nfs/helpers/memfs"
 )
 
 // TestCachingHandlerConcurrentToHandle tests that concurrent calls to ToHandle

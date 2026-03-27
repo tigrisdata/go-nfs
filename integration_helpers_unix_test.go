@@ -16,8 +16,8 @@ import (
 
 	"github.com/go-git/go-billy/v5"
 	osfs "github.com/go-git/go-billy/v5/osfs"
-	nfs "github.com/willscott/go-nfs"
-	"github.com/willscott/go-nfs/helpers"
+	nfs "github.com/tigrisdata/go-nfs"
+	"github.com/tigrisdata/go-nfs/helpers"
 	"golang.org/x/sys/unix"
 )
 
