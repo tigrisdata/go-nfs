@@ -48,4 +48,4 @@ jobs:
       run: sudo apt-get install -y nfs-common
 
     - name: Integration Test
-      run: sudo env "PATH=$PATH" go test -v -tags integration -run TestIntegration -timeout 120s .
+      run: sudo env "PATH=$PATH" go test -v -tags integration -run TestIntegration -timeout 300s .

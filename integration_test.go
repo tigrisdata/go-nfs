@@ -185,10 +185,8 @@ func TestIntegration(t *testing.T) {
 
 	t.Run("ManyFiles", func(t *testing.T) {
 		dir := makeSubdir(t, env.mountDir)
-		// Create 500 files
-		for i := 0; i < 500; i++ {
-			run(t, dir, "touch", fmt.Sprintf("file-%04d.txt", i))
-		}
+		// Create 500 files in batches using a single shell command
+		runSh(t, dir, `for i in $(seq -w 0 499); do touch "file-$i.txt"; done`)
 		// Verify count
 		out := runSh(t, dir, `ls -1 | wc -l`)
 		out = strings.TrimSpace(out)
