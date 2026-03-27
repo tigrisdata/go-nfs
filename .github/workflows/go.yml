@@ -33,6 +33,7 @@ jobs:
 
   integration-test:
     name: Integration Test
+    needs: build
     runs-on: ubuntu-latest
     steps:
     - name: Check out code
@@ -47,4 +48,4 @@ jobs:
       run: sudo apt-get install -y nfs-common
 
     - name: Integration Test
-      run: sudo go test -v -tags integration -run TestIntegration -timeout 120s .
+      run: sudo env "PATH=$PATH" go test -v -tags integration -run TestIntegration -timeout 120s .

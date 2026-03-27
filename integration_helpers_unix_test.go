@@ -57,7 +57,7 @@ func (fs changeOSFS) Mkfifo(path string, mode uint32) error {
 }
 
 func (fs changeOSFS) Link(path string, link string) error {
-	return unix.Link(filepath.Join(fs.Root(), path), link)
+	return unix.Link(filepath.Join(fs.Root(), path), filepath.Join(fs.Root(), link))
 }
 
 func (fs changeOSFS) Socket(path string) error {
@@ -65,6 +65,7 @@ func (fs changeOSFS) Socket(path string) error {
 	if err != nil {
 		return err
 	}
+	defer unix.Close(fd)
 	return unix.Bind(fd, &unix.SockaddrUnix{Name: filepath.Join(fs.Root(), path)})
 }
 
@@ -191,11 +192,21 @@ func mountNFS(port int, mountDir string) error {
 }
 
 func waitForMount(mountDir string, timeout time.Duration) error {
+	// Get the device ID of the mount point before NFS is mounted
+	var preMountStat unix.Stat_t
+	if err := unix.Stat(mountDir, &preMountStat); err != nil {
+		return fmt.Errorf("stat mount dir before mount: %v", err)
+	}
+
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		_, err := os.ReadDir(mountDir)
-		if err == nil {
-			return nil
+		var postMountStat unix.Stat_t
+		if err := unix.Stat(mountDir, &postMountStat); err == nil {
+			// Once the NFS mount is live, the device ID will differ
+			// from the underlying local filesystem
+			if postMountStat.Dev != preMountStat.Dev {
+				return nil
+			}
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
