@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
-	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -169,82 +168,30 @@ func onReadDirStreaming(
 	p []string,
 	obj readDirArgs,
 ) error {
-	// Estimate how many entries to request based on Count.
 	count := int(obj.Count / 64) // ~64 bytes per wire entry estimate
 	if count < 10 {
 		count = 10
 	}
-	maxEntities := userHandle.HandleLimit() / 2
-	if maxEntities > 0 && count > maxEntities {
+	if maxEntities := userHandle.HandleLimit() / 2; maxEntities > 0 && count > maxEntities {
 		count = maxEntities
 	}
 
-	// Reject synthetic cookies — these are interior/EOF entries that
-	// are not valid resumption points. See syntheticCookieBit.
-	if obj.Cookie&syntheticCookieBit != 0 {
-		return &NFSStatusError{NFSStatusBadCookie, nil}
-	}
-
-	// Convert client cookie to handler cookie by removing the offset
-	// for the synthetic "." and ".." entries that go-nfs prepends.
-	// Cookie 0 = first page, cookie 1 = ".." (resume = first real page).
-	handlerCookie := uint64(0)
-	if obj.Cookie > 1 {
-		handlerCookie = obj.Cookie - streamCookieOffset
-	}
-
-	// NOTE: ReadDirStream is called before cookie verifier validation because
-	// the verifier value comes from the handler's return. This means the call
-	// may consume handler state (e.g., continuation tokens) only for the
-	// result to be discarded if the verifier check fails. Implementations
-	// should tolerate this — see ReadDirStreamer docs for guidance.
-	entries, verifier, nextCookie, err := streamer.ReadDirStream(fs, p, handlerCookie, count)
+	page, err := fetchStreamPage(streamer, fs, p, obj.Cookie, obj.CookieVerif, count)
 	if err != nil {
-		if nfsErr, ok := err.(*NFSStatusError); ok {
-			return nfsErr
-		}
-		return &NFSStatusError{NFSStatusIO, err}
+		return err
 	}
 
-	// Validate that the handler's nextCookie won't collide with the
-	// synthetic cookie space. Handler cookies must be < 2^63 so that
-	// adding streamCookieOffset doesn't set the syntheticCookieBit.
-	if nextCookie != 0 && nextCookie >= syntheticCookieBit-streamCookieOffset {
-		return &NFSStatusError{NFSStatusServerFault, fmt.Errorf(
-			"ReadDirStream returned nextCookie %d which is too large (must be < %d)",
-			nextCookie, syntheticCookieBit-streamCookieOffset)}
-	}
+	entities := make([]readDirEntity, 0, len(page.entries)+2)
 
-	// If the handler returned verifier=0, compute one from directory mtime.
-	if verifier == 0 {
-		dirInfo, sErr := fs.Stat(fs.Join(p...))
-		if sErr == nil {
-			verifier = hashPathAndMtime(fs.Join(p...), dirInfo.ModTime().UnixNano())
-		}
-	}
-
-	// Validate cookie verifier to detect directory changes between pages.
-	// Per RFC 1813 §3.3.16, the client echoes back the verifier from the
-	// previous response. If the directory has changed, the verifier won't
-	// match and the client must restart the listing from cookie=0.
-	if obj.Cookie > 0 && obj.CookieVerif > 0 && verifier != obj.CookieVerif {
-		return &NFSStatusError{NFSStatusBadCookie, nil}
-	}
-
-	entities := make([]readDirEntity, 0, len(entries)+2)
-
-	// On first request (cookie=0), prepend "." and ".." entries.
 	if obj.Cookie == 0 {
 		dotdotFileID := uint64(0)
 		if len(p) > 0 {
-			dda := tryStat(fs, p[0:len(p)-1])
-			if dda != nil {
+			if dda := tryStat(fs, p[0:len(p)-1]); dda != nil {
 				dotdotFileID = dda.Fileid
 			}
 		}
 		dotFileID := uint64(0)
-		da := tryStat(fs, p)
-		if da != nil {
+		if da := tryStat(fs, p); da != nil {
 			dotFileID = da.Fileid
 		}
 		entities = append(entities,
@@ -253,34 +200,13 @@ func onReadDirStreaming(
 		)
 	}
 
-	eof := nextCookie == 0
-
-	for i, entry := range entries {
+	for i, entry := range page.entries {
 		filePath := joinPath(p, entry.Name())
 		attrs := ToFileAttribute(entry, path.Join(filePath...))
-
-		// Each entry must have a unique cookie per RFC 1813. The last
-		// entry on a non-EOF page gets a real resumption cookie. All
-		// other entries get synthetic cookies with syntheticCookieBit
-		// set, which go-nfs rejects early if a client tries to resume
-		// from them (see the check at the top of this function).
-		//
-		// Synthetic cookies use (streamCookieOffset + index) to ensure
-		// uniqueness within a page, plus the page's handlerCookie to
-		// ensure uniqueness across pages.
-		var cookie uint64
-		if eof {
-			cookie = syntheticCookieBit | (handlerCookie + streamCookieOffset + uint64(i))
-		} else if i == len(entries)-1 {
-			cookie = nextCookie + streamCookieOffset
-		} else {
-			cookie = syntheticCookieBit | (handlerCookie + streamCookieOffset + uint64(i))
-		}
-
 		entities = append(entities, readDirEntity{
 			FileID: attrs.Fileid,
 			Name:   []byte(entry.Name()),
-			Cookie: cookie,
+			Cookie: streamingCookie(page.eof, i, len(page.entries), page.handlerCookie, page.nextCookie),
 			Next:   true,
 		})
 	}
@@ -292,11 +218,9 @@ func onReadDirStreaming(
 	if err := WritePostOpAttrs(writer, tryStat(fs, p)); err != nil {
 		return &NFSStatusError{NFSStatusServerFault, err}
 	}
-
-	if err := xdr.Write(writer, verifier); err != nil {
+	if err := xdr.Write(writer, page.verifier); err != nil {
 		return &NFSStatusError{NFSStatusServerFault, err}
 	}
-
 	if err := xdr.Write(writer, len(entities) > 0); err != nil {
 		return &NFSStatusError{NFSStatusServerFault, err}
 	}
@@ -308,10 +232,9 @@ func onReadDirStreaming(
 			}
 		}
 	}
-	if err := xdr.Write(writer, eof); err != nil {
+	if err := xdr.Write(writer, page.eof); err != nil {
 		return &NFSStatusError{NFSStatusServerFault, err}
 	}
-
 	if err := w.Write(writer.Bytes()); err != nil {
 		return &NFSStatusError{NFSStatusServerFault, err}
 	}
