@@ -158,6 +158,12 @@ func (env *testEnv) teardown(t *testing.T) {
 }
 
 func mountNFS(port int, mountDir string) error {
+	// Capture device ID before mount so we can detect when it changes
+	var preMountStat unix.Stat_t
+	if err := unix.Stat(mountDir, &preMountStat); err != nil {
+		return fmt.Errorf("stat mount dir before mount: %v", err)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -184,27 +190,19 @@ func mountNFS(port int, mountDir string) error {
 		return fmt.Errorf("mount failed: %v, output: %s", err, output)
 	}
 
-	// Verify mount is usable
-	if err := waitForMount(mountDir, 10*time.Second); err != nil {
+	// Verify mount is usable by checking device ID changed
+	if err := waitForMount(mountDir, &preMountStat, 10*time.Second); err != nil {
 		return fmt.Errorf("mount not ready: %v", err)
 	}
 	return nil
 }
 
-func waitForMount(mountDir string, timeout time.Duration) error {
-	// Get the device ID of the mount point before NFS is mounted
-	var preMountStat unix.Stat_t
-	if err := unix.Stat(mountDir, &preMountStat); err != nil {
-		return fmt.Errorf("stat mount dir before mount: %v", err)
-	}
-
+func waitForMount(mountDir string, preMountStat *unix.Stat_t, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		var postMountStat unix.Stat_t
-		if err := unix.Stat(mountDir, &postMountStat); err == nil {
-			// Once the NFS mount is live, the device ID will differ
-			// from the underlying local filesystem
-			if postMountStat.Dev != preMountStat.Dev {
+		var st unix.Stat_t
+		if err := unix.Stat(mountDir, &st); err == nil {
+			if st.Dev != preMountStat.Dev {
 				return nil
 			}
 		}
