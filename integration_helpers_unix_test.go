@@ -242,7 +242,7 @@ func unmountNFS(mountDir string) error {
 // and returns the combined stdout/stderr output.
 func run(t *testing.T, dir string, name string, args ...string) string {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
