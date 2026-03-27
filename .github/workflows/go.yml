@@ -2,9 +2,9 @@ name: Go
 
 on:
   push:
-    branches: [ master ]
+    branches: [ main ]
   pull_request:
-    branches: [ master ]
+    branches: [ main ]
 
 permissions:
   contents: read
@@ -30,3 +30,22 @@ jobs:
 
     - name: Test
       run: go test -v .
+
+  integration-test:
+    name: Integration Test
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+    - name: Check out code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.21'
+
+    - name: Install NFS client
+      run: sudo apt-get install -y nfs-common
+
+    - name: Integration Test
+      run: sudo env "PATH=$PATH" go test -v -tags integration -run TestIntegration -timeout 300s .

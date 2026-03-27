@@ -67,6 +67,28 @@ func panicOnErr(err error, desc ...interface{}) {
 }
 ```
 
+## Testing
+
+Unit tests can be run without any special privileges:
+
+```bash
+go test -v .
+```
+
+Integration tests mount an actual NFS filesystem and exercise it using standard
+Unix utilities (`cat`, `ls`, `mkdir`, `cp`, `mv`, `rm`, `ln`, `chmod`, `dd`,
+`diff`, `stat`, `find`, etc.). They require root privileges for the NFS mount
+and are gated behind the `integration` build tag:
+
+```bash
+# macOS
+sudo go test -v -tags integration -run TestIntegration -timeout 120s .
+
+# Linux (requires nfs-common or nfs-utils to be installed)
+sudo apt-get install -y nfs-common   # Debian/Ubuntu
+sudo go test -v -tags integration -run TestIntegration -timeout 120s .
+```
+
 ## Notes
 
 - Ports are typically determined through portmap. The need for running portmap
