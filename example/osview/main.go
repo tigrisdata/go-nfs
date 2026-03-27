@@ -7,8 +7,8 @@ import (
 
 	"github.com/willscott/memphis"
 
-	nfs "github.com/willscott/go-nfs"
-	nfshelper "github.com/willscott/go-nfs/helpers"
+	nfs "github.com/tigrisdata/go-nfs"
+	nfshelper "github.com/tigrisdata/go-nfs/helpers"
 )
 
 func main() {

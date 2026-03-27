@@ -5,7 +5,7 @@ import (
 	"net"
 
 	"github.com/go-git/go-billy/v5"
-	"github.com/willscott/go-nfs"
+	"github.com/tigrisdata/go-nfs"
 )
 
 // NewNullAuthHandler creates a handler for the provided filesystem

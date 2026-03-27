@@ -6,8 +6,8 @@ import (
 	"os"
 
 	osfs "github.com/go-git/go-billy/v5/osfs"
-	nfs "github.com/willscott/go-nfs"
-	nfshelper "github.com/willscott/go-nfs/helpers"
+	nfs "github.com/tigrisdata/go-nfs"
+	nfshelper "github.com/tigrisdata/go-nfs/helpers"
 )
 
 func main() {

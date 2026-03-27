@@ -1,4 +1,4 @@
-module github.com/willscott/go-nfs
+module github.com/tigrisdata/go-nfs
 
 go 1.19
 
