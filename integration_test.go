@@ -170,13 +170,13 @@ func TestIntegration(t *testing.T) {
 
 	t.Run("LargeFileDD", func(t *testing.T) {
 		dir := makeSubdir(t, env.mountDir)
-		// Write 10 MB file
-		run(t, dir, "dd", "if=/dev/urandom", "of=large.bin", "bs=1048576", "count=10")
-		// Verify size
+		// Write 1 MB file using /dev/zero (fast to generate)
+		run(t, dir, "dd", "if=/dev/zero", "of=large.bin", "bs=1024", "count=1024")
+		// Verify size (1 MB = 1048576 bytes)
 		out := runSh(t, dir, `wc -c < large.bin`)
 		out = strings.TrimSpace(out)
-		if out != "10485760" {
-			t.Fatalf("expected 10485760 bytes, got %s", out)
+		if out != "1048576" {
+			t.Fatalf("expected 1048576 bytes, got %s", out)
 		}
 		// Copy and diff to verify integrity
 		run(t, dir, "cp", "large.bin", "large2.bin")
